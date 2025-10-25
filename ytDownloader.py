@@ -37,7 +37,7 @@ def get_video_info(url: str) -> Tuple[Optional[Dict], Optional[str]]:
     Returns (info_dict, None) on success or (None, error_message) on failure.
     """
     try:
-        yt = YouTube(url)
+        yt = YouTube(url, use_po_token=True)
         info = {
             "title": yt.title,
             "author": yt.author,
@@ -60,7 +60,7 @@ def download_video(url: str, resolution: Optional[str] = None, output_path: Opti
     Returns (True, saved_filepath) on success, or (False, error_message) on failure.
     """
     try:
-        yt = YouTube(url, "WEB")
+        yt = YouTube(url, use_po_token=True)
         # pick a progressive mp4 stream (contains audio)
         stream = None
         if resolution:
