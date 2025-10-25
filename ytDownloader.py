@@ -60,7 +60,7 @@ def download_video(url: str, resolution: Optional[str] = None, output_path: Opti
     Returns (True, saved_filepath) on success, or (False, error_message) on failure.
     """
     try:
-        yt = YouTube(url)
+        yt = YouTube(url, "WEB")
         # pick a progressive mp4 stream (contains audio)
         stream = None
         if resolution:
