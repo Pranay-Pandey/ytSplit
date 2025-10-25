@@ -6,7 +6,7 @@ import shutil
 import re
 from typing import List, Tuple
 import subprocess
-# import cv2
+import cv2
 import math
  
 def parse_time_to_seconds(t: str) -> float:
@@ -86,7 +86,6 @@ def split_video_cv(source_path: str, ranges: List[Tuple[float, float]], out_dir:
     If you need audio preserved, use ffmpeg-based splitting instead.
     """
     clips = []
-    return clips
     cap = cv2.VideoCapture(source_path)
     if not cap.isOpened():
         cap.release()
