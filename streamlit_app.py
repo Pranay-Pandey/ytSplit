@@ -8,6 +8,7 @@ from typing import List, Tuple
 import subprocess
 import cv2
 import math
+from ytDownloader import is_valid_youtube_url, get_video_info, download_video
  
 def parse_time_to_seconds(t: str) -> float:
     """Parse timestamps like HH:MM:SS or MM:SS or S to seconds."""
@@ -54,28 +55,7 @@ def download_file_from_url(url: str, out_dir: str, filename: str = "source.mp4")
     return out_path
 
 
-def download_youtube_with_exe(url: str, out_dir: str) -> str:
-    """Download YouTube using an external `yt-dlp` executable (must be installed on the system PATH).
-
-    This avoids adding yt-dlp as a Python package dependency. If the executable is not found,
-    the function will raise FileNotFoundError.
-    """
-    outtmpl = os.path.join(out_dir, 'source.%(ext)s')
-    cmd = [
-        'yt-dlp',
-        '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        '-o', outtmpl,
-        '--merge-output-format', 'mp4',
-        url,
-    ]
-    # Run yt-dlp; let errors bubble up to be reported to the user
-    subprocess.run(cmd, check=True)
-
-    # find the downloaded file in out_dir
-    for f in os.listdir(out_dir):
-        if f.startswith('source.'):
-            return os.path.join(out_dir, f)
-    raise FileNotFoundError('yt-dlp did not produce a file in the output directory')
+# NOTE: yt-dlp executable removed per user request. All YouTube downloads use pytube via ytDownloader.download_video
 
 
 def split_video_cv(source_path: str, ranges: List[Tuple[float, float]], out_dir: str) -> List[str]:
@@ -122,15 +102,81 @@ def split_video_cv(source_path: str, ranges: List[Tuple[float, float]], out_dir:
     return clips
 
 
+def split_video_ffmpeg(source_path: str, ranges: List[Tuple[float, float]], out_dir: str) -> List[str]:
+    """Split using ffmpeg subprocess. Preserves audio when possible. Requires ffmpeg binary on PATH."""
+    clips = []
+    for idx, (start, end) in enumerate(ranges, start=1):
+        out_file = os.path.join(out_dir, f"clip_{idx:02d}.mp4")
+        # Try stream copy first (fast)
+        cmd_copy = [
+            'ffmpeg', '-y', '-ss', str(start), '-to', str(end), '-i', source_path,
+            '-c', 'copy', out_file
+        ]
+        try:
+            subprocess.run(cmd_copy, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError:
+            # Fallback: re-encode for frame-accurate and compatibility
+            cmd_reencode = [
+                'ffmpeg', '-y', '-ss', str(start), '-to', str(end), '-i', source_path,
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', out_file
+            ]
+            subprocess.run(cmd_reencode, check=True)
+        clips.append(out_file)
+    return clips
+
+
 def main():
     st.set_page_config(page_title="YouTube Splitter", layout="centered")
     st.title("YouTube Video Splitter")
 
-    st.markdown("Provide a direct video file (upload or a direct file URL). YouTube page URLs are NOT supported here unless you download the video yourself with a downloader (e.g. `yt-dlp`) and then upload the file. Example range formats: `00:00:10-00:00:30`, `1:00-2:30`, or `10-20`.")
+    st.markdown("Provide a direct video file (upload or a direct file URL), or paste a YouTube URL. The app will try to download YouTube videos using `pytube` (Python package). Example range formats: `00:00:10-00:00:30`, `1:00-2:30`, or `10-20`.")
 
     upload = st.file_uploader("Upload a video file (mp4/mov/mkv)", type=["mp4", "mov", "mkv"], accept_multiple_files=False)
-    url = st.text_input("Or provide a direct video file URL (must point to a downloadable file)")
-    ranges_text = st.text_area("Time ranges (one per line)", height=200, placeholder="00:00:10-00:00:30\n1:00-2:30")
+    url = st.text_input("Or provide a direct video file or YouTube URL")
+
+    # Mobile-friendly dynamic range inputs
+    if 'num_ranges' not in st.session_state:
+        st.session_state.num_ranges = 1
+
+    st.markdown("#### Time ranges")
+    st.markdown("Use HH:MM:SS, MM:SS or seconds. Add or remove ranges as needed.")
+
+    remove_index = None
+    for i in range(st.session_state.num_ranges):
+        cols = st.columns([4, 4, 1])
+        start_key = f"start_{i}"
+        end_key = f"end_{i}"
+        start_val = st.session_state.get(start_key, "")
+        end_val = st.session_state.get(end_key, "")
+        cols[0].text_input("Start", key=start_key, value=start_val, placeholder="00:00:00")
+        cols[1].text_input("End", key=end_key, value=end_val, placeholder="00:00:10")
+        if cols[2].button("Remove", key=f"remove_{i}"):
+            remove_index = i
+
+    cols_add = st.columns([1, 1])
+    if cols_add[0].button("Add range"):
+        # create next keys with empty values
+        idx = st.session_state.num_ranges
+        st.session_state[f"start_{idx}"] = ""
+        st.session_state[f"end_{idx}"] = ""
+        st.session_state.num_ranges += 1
+
+    if remove_index is not None:
+        # rebuild keys excluding the removed index
+        new_pairs = []
+        for j in range(st.session_state.num_ranges):
+            if j == remove_index:
+                continue
+            new_pairs.append((st.session_state.get(f"start_{j}", ""), st.session_state.get(f"end_{j}", "")))
+        # clear old keys
+        for j in range(st.session_state.num_ranges):
+            st.session_state.pop(f"start_{j}", None)
+            st.session_state.pop(f"end_{j}", None)
+        # write back
+        for j, (s, e) in enumerate(new_pairs):
+            st.session_state[f"start_{j}"] = s
+            st.session_state[f"end_{j}"] = e
+        st.session_state.num_ranges = len(new_pairs) if new_pairs else 1
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -157,10 +203,29 @@ def main():
             st.error("Please upload a video file or provide a direct video URL.")
             return
 
-        try:
-            ranges = parse_ranges(ranges_text)
-        except Exception as e:
-            st.error(f"Could not parse ranges: {e}")
+        # Read ranges from dynamic inputs and validate each individually.
+        invalid_inputs = []
+        parsed_ranges: List[Tuple[float, float]] = []
+        for i in range(st.session_state.num_ranges):
+            s = st.session_state.get(f"start_{i}", "").strip()
+            e = st.session_state.get(f"end_{i}", "").strip()
+            if not s and not e:
+                continue
+            if not s or not e:
+                invalid_inputs.append((i + 1, s, e, 'start or end missing'))
+                continue
+            try:
+                start_s = parse_time_to_seconds(s)
+                end_s = parse_time_to_seconds(e)
+                if end_s <= start_s:
+                    invalid_inputs.append((i + 1, s, e, 'end must be greater than start'))
+                    continue
+                parsed_ranges.append((start_s, end_s))
+            except Exception as ex:
+                invalid_inputs.append((i + 1, s, e, str(ex)))
+
+        if not parsed_ranges and invalid_inputs:
+            st.error(f"No valid ranges provided. First error: {invalid_inputs[0]}")
             return
 
         tmp = tempfile.mkdtemp(prefix="yt_split_")
@@ -176,19 +241,89 @@ def main():
             else:
                 # detect YouTube-like URLs; if so try to call yt-dlp executable
                 if any(d in url.lower() for d in ['youtube.com', 'youtu.be']):
-                    status.info("Detected YouTube URL — attempting to download with local yt-dlp executable...")
+                    status.info("Detected YouTube URL — attempting to download with pytube first...")
+                    # Use the included Python downloader (pytube) via ytDownloader
                     try:
-                        source_path = download_youtube_with_exe(url, tmp)
-                    except FileNotFoundError:
-                        raise RuntimeError('yt-dlp executable not found on PATH. Please install yt-dlp or upload the file manually.')
+                        success, result = download_video(url, output_path=tmp)
+                        if success:
+                            source_path = result
+                            status.info("Downloaded via pytube.")
+                        else:
+                            # pytube reported an error; surface it
+                            raise RuntimeError(f"pytube failed: {result}")
+                    except Exception as ex:
+                        # unexpected error from pytube usage
+                        raise RuntimeError(f'pytube download failed: {ex}. Please ensure pytube is working or upload the video file manually.')
                 else:
                     status.info("Downloading file from URL... (must be a direct file link)")
                     source_path = download_file_from_url(url, tmp, filename='source.mp4')
 
-            status.info("File ready. Splitting clips (OpenCV - frames only, audio will NOT be preserved)...")
-            clips = split_video_cv(source_path, ranges, tmp)
-            st.session_state.clips = clips
-            status.success(f"Created {len(clips)} clip(s). Scroll below to download.")
+            status.info("File ready. Validating ranges against video duration...")
+
+            # get duration using OpenCV
+            cap_info = cv2.VideoCapture(source_path)
+            if not cap_info.isOpened():
+                # try to transcode with ffmpeg (if available) into an mp4 OpenCV can read
+                if shutil.which('ffmpeg'):
+                    status.info('Downloaded file not directly readable by OpenCV — attempting to transcode with ffmpeg...')
+                    # To avoid issues with special characters or long paths in the original filename,
+                    # copy the source to a safe temporary filename and run ffmpeg on that.
+                    safe_input = os.path.join(tmp, 'source_input.mp4')
+                    try:
+                        shutil.copy2(source_path, safe_input)
+                    except Exception:
+                        # fallback to using original path if copy fails
+                        safe_input = source_path
+                    converted = os.path.join(tmp, 'source_converted.mp4')
+                    cmd = ['ffmpeg', '-y', '-i', safe_input, '-c:v', 'libx264', '-c:a', 'aac', converted]
+                    try:
+                        proc = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        source_path = converted
+                        cap_info = cv2.VideoCapture(source_path)
+                    except subprocess.CalledProcessError as cpe:
+                        stderr = cpe.stderr.decode('utf-8', errors='ignore') if cpe.stderr else str(cpe)
+                        raise RuntimeError(f'ffmpeg failed to transcode file: {stderr}')
+                else:
+                    cap_info.release()
+                    raise RuntimeError('Could not open downloaded video for duration check. The file may be in an unsupported container; install ffmpeg or upload the file manually.')
+            fps = cap_info.get(cv2.CAP_PROP_FPS)
+            if fps <= 0 or math.isnan(fps):
+                fps = 30.0
+            frame_count = int(cap_info.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            duration = frame_count / fps if fps > 0 else 0
+            cap_info.release()
+
+            accepted_ranges: List[Tuple[float, float]] = []
+            skipped_ranges: List[Tuple[float, float]] = []
+            for (start_s, end_s) in parsed_ranges:
+                if start_s >= duration:
+                    skipped_ranges.append((start_s, end_s))
+                else:
+                    accepted_ranges.append((start_s, min(end_s, duration)))
+
+            clips: List[str] = []
+            if accepted_ranges:
+                # prefer ffmpeg (preserves audio) if available, otherwise fall back to OpenCV
+                if shutil.which('ffmpeg'):
+                    status.info("ffmpeg found — performing audio-preserving splits...")
+                    clips = split_video_ffmpeg(source_path, accepted_ranges, tmp)
+                else:
+                    status.warning("ffmpeg not found on PATH — falling back to OpenCV (audio will be dropped). Install ffmpeg to keep audio.")
+                    clips = split_video_cv(source_path, accepted_ranges, tmp)
+                st.session_state.clips = clips
+                status.success(f"Created {len(clips)} clip(s). Scroll below to download.")
+            else:
+                status.info("No ranges to split after validating against video duration.")
+
+            # Report invalid or skipped ranges to user
+            if invalid_inputs:
+                st.warning("Some range inputs were invalid and skipped:")
+                for idx, s, e, reason in invalid_inputs:
+                    st.text(f"Range #{idx}: '{s}' - '{e}'  => {reason}")
+            if skipped_ranges:
+                st.warning("Some ranges started after video end and were skipped:")
+                for s, e in skipped_ranges:
+                    st.text(f"{s} - {e} (video duration {duration:.2f}s)")
         except Exception as e:
             status.error(f"Error: {e}")
             # cleanup on failure
@@ -211,7 +346,7 @@ def main():
             cols[1].download_button(label="Download", data=data, file_name=fname, mime='video/mp4')
 
     st.markdown("---")
-    st.markdown("Notes: This app uses pytube to download YouTube and moviepy/FFmpeg to split. On Windows you must have FFmpeg installed and available on PATH.")
+    st.markdown("Notes: This app uses `pytube` (Python package) to download YouTube links and OpenCV to trim video frames. OpenCV trimming will NOT preserve audio. If you need audio-preserving splits, install `ffmpeg` and ask me to switch trimming to use it.")
 
 
 if __name__ == '__main__':

@@ -24,7 +24,7 @@ Quick start (Windows):
 
 Usage notes:
 
-- The app accepts an uploaded video file (mp4/mov/mkv), a direct URL pointing to a downloadable video file, or a YouTube URL. If you paste a YouTube URL, the app will use `yt-dlp` to download the source video locally.
+- The app accepts an uploaded video file (mp4/mov/mkv), a direct URL pointing to a downloadable video file, or a YouTube URL. If you paste a YouTube URL, the app will use `pytubefix` (the Python package) to download the source video locally. If the downloader fails for a particular video it will present the error and you can upload the file manually.
 - Enter time ranges, one per line. Examples:
   - `00:00:10-00:00:30`
   - `1:00-2:30`
@@ -33,7 +33,14 @@ Usage notes:
 
 Limitations & notes:
 
-- This version integrates `yt-dlp` for YouTube downloads and uses the `ffmpeg` system binary to cut clips. `ffmpeg` must be installed and on PATH.
+- This version uses `pytubefix` for YouTube downloads and OpenCV to trim video frames. Note: OpenCV trimming does NOT preserve audio. If you need audio-preserving splits, install `ffmpeg` and ask to switch trimming to ffmpeg (subprocess) behavior.
+- This version uses `pytubefix` for YouTube downloads and prefers `ffmpeg` (system binary) to create audio-preserving clips. If `ffmpeg` is not found on PATH the app will fall back to OpenCV frame-based trimming (which does NOT preserve audio). To keep audio, install `ffmpeg`.
+
+Installing FFmpeg on Windows:
+
+1. Download a static build (e.g., from https://www.gyan.dev/ffmpeg/builds/ or https://www.ffmpeg.org/download.html).
+2. Unzip and add the `bin` folder (containing `ffmpeg.exe`) to your PATH environment variable.
+3. Restart your terminal/PowerShell and re-run the app.
 
 Fixing the Numpy / MINGW warning you saw:
 

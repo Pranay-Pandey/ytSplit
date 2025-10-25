@@ -1,3 +1,4 @@
 install-pyenv-win.ps1
 .pvenv
 .vscode
+__pycache__/
